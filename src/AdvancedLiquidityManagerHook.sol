@@ -10,6 +10,12 @@ import {PoolId, PoolIdLibrary} from "v4-core/src/types/PoolId.sol";
 import {BalanceDelta} from "v4-core/src/types/BalanceDelta.sol";
 import {BeforeSwapDelta, BeforeSwapDeltaLibrary} from "v4-core/src/types/BeforeSwapDelta.sol";
 import {LPFeeLibrary} from "v4-core/src/libraries/LPFeeLibrary.sol";
+import {Currency} from "v4-core/src/types/Currency.sol";
+
+import {IPositionManager} from './interface/IPositionManager.sol';
+import {IRevenueManager} from './interface/IRevenueManager.sol';
+import {ITreasuryManagerFactory} from './interface/ITreasuryManagerFactory.sol';
+
 
 contract AdvancedLiquidityManagerHook is BaseHook {
     using LPFeeLibrary for uint24;
@@ -34,6 +40,13 @@ contract AdvancedLiquidityManagerHook is BaseHook {
         uint256 volatility;
         uint256 lastUpdateTimestamp;
     }
+
+
+     struct FlaunchToken {
+        address memecoin;
+        uint tokenId;
+        address payable manager;
+    }
     
     mapping(PoolId => PoolAnalytics) public poolAnalytics;
     
@@ -41,7 +54,22 @@ contract AdvancedLiquidityManagerHook is BaseHook {
     mapping(PoolId => bool) public isStablecoinPool;
     uint24 public constant STABLECOIN_BASE_FEE = 100; // 0.01% for stables
     
-    constructor(IPoolManager _poolManager) BaseHook(_poolManager) {
+    // Add new state variables
+    address public immutable managerImplementation;
+    IPositionManager public immutable positionManager;
+    ITreasuryManagerFactory public immutable treasuryManagerFactory;
+    mapping(PoolId => FlaunchToken) public flaunchTokens;
+    mapping(PoolId => bool) public isNativePool;
+
+    constructor(
+        IPoolManager _poolManager,
+        address _positionManager,
+        address _treasuryManagerFactory,
+        address _managerImplementation
+    ) BaseHook(_poolManager) {
+        positionManager = IPositionManager(_positionManager);
+        treasuryManagerFactory = ITreasuryManagerFactory(_treasuryManagerFactory);
+        managerImplementation = _managerImplementation;
         updateMovingAverage();
     }
 
@@ -49,10 +77,54 @@ contract AdvancedLiquidityManagerHook is BaseHook {
         isStablecoinPool[poolId] = isStable;
     }
 
-    function _beforeInitialize(address, PoolKey calldata key, uint160) internal pure override returns (bytes4) {
-        // `.isDynamicFee()` function comes from using
-        // the `LPFeeLibrary` for `uint24`
+    function _beforeInitialize(address, PoolKey calldata key, uint160) internal override returns (bytes4) {
         if (!key.fee.isDynamicFee()) revert MustUseDynamicFee();
+        
+        // Check if this is a native ETH pool
+        if (Currency.unwrap(key.currency0) == address(0)) {
+            PoolId poolId = PoolIdLibrary.toId(key);
+            isNativePool[poolId] = true;
+            
+            // Flaunch the token
+            address memecoin = positionManager.flaunch(
+                IPositionManager.FlaunchParams({
+                    name: 'Token Name',
+                    symbol: 'SYMBOL',
+                    tokenUri: 'https://token.gg/',
+                    initialTokenFairLaunch: 50e27,
+                    premineAmount: 0,
+                    creator: address(this),
+                    creatorFeeAllocation: 10_00, // 10% fees
+                    flaunchAt: 0,
+                    initialPriceParams: abi.encode(''),
+                    feeCalculatorParams: abi.encode(1_000)
+                })
+            );
+
+            uint tokenId = positionManager.flaunchContract().tokenId(memecoin);
+            address payable manager = treasuryManagerFactory.deployManager(managerImplementation);
+
+            // Initialize manager
+            positionManager.flaunchContract().approve(manager, tokenId);
+            IRevenueManager(manager).initialize(
+                IRevenueManager.FlaunchToken(positionManager.flaunchContract(), tokenId),
+                address(this),
+                abi.encode(
+                    IRevenueManager.InitializeParams(
+                        payable(address(this)),
+                        payable(address(this)),
+                        100_00
+                    )
+                )
+            );
+
+            flaunchTokens[poolId] = FlaunchToken({
+                memecoin: memecoin,
+                tokenId: tokenId,
+                manager: manager
+            });
+        }
+        
         return this.beforeInitialize.selector;
     }
 
@@ -89,13 +161,13 @@ contract AdvancedLiquidityManagerHook is BaseHook {
 
     function getHookPermissions() public pure override returns (Hooks.Permissions memory) {
         return Hooks.Permissions({
-            beforeInitialize: false,
+            beforeInitialize: true,
             afterInitialize: false,
-            beforeAddLiquidity: false,
+            beforeAddLiquidity: true,
             afterAddLiquidity: true,
-            beforeRemoveLiquidity: false,
+            beforeRemoveLiquidity: true,
             afterRemoveLiquidity: false,
-            beforeSwap: false,
+            beforeSwap: true,
             afterSwap: true,
             beforeDonate: false,
             afterDonate: false,
@@ -140,14 +212,13 @@ contract AdvancedLiquidityManagerHook is BaseHook {
     }
 
 
-     function _beforeSwap(address, PoolKey calldata key, IPoolManager.SwapParams calldata, bytes calldata)
+     function _beforeSwap(address sender, PoolKey calldata key, IPoolManager.SwapParams calldata params, bytes calldata data)
         internal
-        view
         override
         returns (bytes4, BeforeSwapDelta, uint24)
     {
+        _claimAndDonateFees(key);
         uint24 fee = getFee(key);
-        // poolManager.updateDynamicLPFee(key, fee);
         uint24 feeWithFlag = fee | LPFeeLibrary.OVERRIDE_FEE_FLAG;
         return (this.beforeSwap.selector, BeforeSwapDeltaLibrary.ZERO_DELTA, feeWithFlag);
     }
@@ -214,4 +285,29 @@ contract AdvancedLiquidityManagerHook is BaseHook {
     function abs(int256 x) internal pure returns (int256) {
         return x >= 0 ? x : -x;
     }
+
+    function _claimAndDonateFees(PoolKey calldata key) internal {
+        PoolId poolId = key.toId();
+
+        // Check if this is a native pool with a flaunch token
+        FlaunchToken memory flaunchToken = flaunchTokens[poolId];
+        if (flaunchToken.tokenId == 0) {
+            return;
+        }
+
+        // Withdraw fees
+        (, uint ethReceived) = IRevenueManager(flaunchToken.manager).claim();
+
+        // Donate if we received ETH
+        if (ethReceived > 0) {
+            poolManager.donate({
+                key: key,
+                amount0: ethReceived,
+                amount1: 0,
+                hookData: ''
+            });
+        }
+    }
+
+    receive() external payable {}
 }
