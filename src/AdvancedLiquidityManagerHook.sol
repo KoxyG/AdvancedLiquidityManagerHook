@@ -45,6 +45,10 @@ contract AdvancedLiquidityManagerHook is BaseHook {
         updateMovingAverage();
     }
 
+    function setStablecoinPool(PoolId poolId, bool isStable) public {
+        isStablecoinPool[poolId] = isStable;
+    }
+
     function _beforeInitialize(address, PoolKey calldata key, uint160) internal pure override returns (bytes4) {
         // `.isDynamicFee()` function comes from using
         // the `LPFeeLibrary` for `uint24`
@@ -54,7 +58,7 @@ contract AdvancedLiquidityManagerHook is BaseHook {
 
    
 
-    function getFee(PoolKey calldata key) internal view returns (uint24) {
+    function getFee(PoolKey calldata key) public view returns (uint24) {
         PoolId poolId = PoolIdLibrary.toId(key);
         
         // Use lower fees for stablecoin pools
@@ -103,13 +107,13 @@ contract AdvancedLiquidityManagerHook is BaseHook {
     }
 
     // afterSwap
-    function afterSwap(
+    function _afterSwap(
         address,
         PoolKey calldata key,
         IPoolManager.SwapParams calldata params,
         BalanceDelta delta,
         bytes calldata
-    ) external override returns (bytes4, int128) {
+    ) internal override returns (bytes4, int128) {
         PoolId poolId = PoolIdLibrary.toId(key);
         
         // Update analytics
@@ -118,7 +122,7 @@ contract AdvancedLiquidityManagerHook is BaseHook {
         analytics.totalVolume += uint256(abs(delta.amount0()));
         
         // Calculate and update price volatility
-        uint256 currentPrice = calculatePrice(delta, params);
+        uint256 currentPrice = calculatePrice(delta);
         if (analytics.lastPrice > 0) {
             analytics.volatility = calculateVolatility(
                 currentPrice,
@@ -138,6 +142,7 @@ contract AdvancedLiquidityManagerHook is BaseHook {
 
      function _beforeSwap(address, PoolKey calldata key, IPoolManager.SwapParams calldata, bytes calldata)
         internal
+        view
         override
         returns (bytes4, BeforeSwapDelta, uint24)
     {
@@ -145,18 +150,6 @@ contract AdvancedLiquidityManagerHook is BaseHook {
         // poolManager.updateDynamicLPFee(key, fee);
         uint24 feeWithFlag = fee | LPFeeLibrary.OVERRIDE_FEE_FLAG;
         return (this.beforeSwap.selector, BeforeSwapDeltaLibrary.ZERO_DELTA, feeWithFlag);
-    }
-
-    // afterAddLiquidity
-    function afterAddLiquidity(
-        address sender,
-        PoolKey calldata key,
-        IPoolManager.ModifyLiquidityParams calldata params,
-        BalanceDelta delta,
-        BalanceDelta feesAccrued,
-        bytes calldata hookData
-    ) external override returns (bytes4, BalanceDelta) {
-        return (BaseHook.afterAddLiquidity.selector, delta);
     }
 
     // getHookData
@@ -169,7 +162,7 @@ contract AdvancedLiquidityManagerHook is BaseHook {
     }
 
     // Update our moving average gas price
-    function updateMovingAverage() internal {
+    function updateMovingAverage() public {
         uint128 gasPrice = uint128(tx.gasprice);
 
         // New Average = ((Old Average * # of Txns Tracked) + Current Gas Price) / (# of Txns Tracked + 1)
@@ -180,8 +173,8 @@ contract AdvancedLiquidityManagerHook is BaseHook {
     }
 
     // Helper functions
-    function calculatePrice(BalanceDelta delta, IPoolManager.SwapParams calldata params) 
-        internal pure returns (uint256) {
+    function calculatePrice(BalanceDelta delta) 
+        public pure returns (uint256) {
         // Get absolute values of the swap amounts
         uint256 amount0 = uint256(abs(delta.amount0()));
         uint256 amount1 = uint256(abs(delta.amount1()));
@@ -198,7 +191,7 @@ contract AdvancedLiquidityManagerHook is BaseHook {
         uint256 currentPrice,
         uint256 lastPrice,
         uint256 lastUpdateTime
-    ) internal view returns (uint256) {
+    ) public view returns (uint256) {
         // Calculate time elapsed since last update (in seconds)
         uint256 timeElapsed = block.timestamp - lastUpdateTime;
         if (timeElapsed == 0) return 0;
