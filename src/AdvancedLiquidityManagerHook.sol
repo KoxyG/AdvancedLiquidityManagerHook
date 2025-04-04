@@ -186,7 +186,7 @@ contract AdvancedLiquidityManagerHook is BaseHook {
     function _afterSwap(
         address,
         PoolKey calldata key,
-        IPoolManager.SwapParams calldata params,
+        IPoolManager.SwapParams calldata,
         BalanceDelta delta,
         bytes calldata
     ) internal override returns (bytes4, int128) {
