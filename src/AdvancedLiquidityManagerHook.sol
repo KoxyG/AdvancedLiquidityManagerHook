@@ -20,46 +20,43 @@ import {ITreasuryManagerFactory} from './interface/ITreasuryManagerFactory.sol';
 contract AdvancedLiquidityManagerHook is BaseHook {
     using LPFeeLibrary for uint24;
 
-    // Keeping track of the moving average gas price
-    uint128 public movingAverageGasPrice;
-    // How many times has the moving average been updated?
-    // Needed as the denominator to update it the next time based on the moving average formula
-    uint104 public movingAverageGasPriceCount;
+    // Gas price tracking for dynamic fee adjustments
+    uint128 public movingAverageGasPrice;    // Current moving average of gas prices
+    uint104 public movingAverageGasPriceCount; // Number of updates for moving average
 
-    // The default base fees we will charge
-    uint24 public constant BASE_FEE = 5000; // denominated in pips (one-hundredth bps) 0.5%
+    // Fee configuration constants
+    uint24 public constant BASE_FEE = 5000; // 0.5% base fee
     uint256 public constant HIGH_VOLATILITY_THRESHOLD = 1000; // 10% price change threshold
+    uint24 public constant STABLECOIN_BASE_FEE = 100; // 0.01% for stablecoin pairs
 
     error MustUseDynamicFee();
 
-    // Add new state variables for analytics and cross-chain data
+    // Analytics tracking for each pool
     struct PoolAnalytics {
-        uint256 totalVolume;
-        uint256 totalSwaps;
-        uint256 lastPrice;
-        uint256 volatility;
-        uint256 lastUpdateTimestamp;
+        uint256 totalVolume;      // Total trading volume
+        uint256 totalSwaps;       // Number of swaps executed
+        uint256 lastPrice;        // Last recorded price
+        uint256 volatility;       // Current volatility metric
+        uint256 lastUpdateTimestamp; // Last update time
     }
 
-
-     struct FlaunchToken {
-        address memecoin;
-        uint tokenId;
-        address payable manager;
+    // Flaunch token information for ETH pairs
+    struct FlaunchToken {
+        address memecoin;         // Token address
+        uint tokenId;            // Unique token identifier
+        address payable manager;  // Treasury manager address
     }
     
-    mapping(PoolId => PoolAnalytics) public poolAnalytics;
-    
-    // Track stablecoin pools separately
-    mapping(PoolId => bool) public isStablecoinPool;
-    uint24 public constant STABLECOIN_BASE_FEE = 100; // 0.01% for stables
-    
-    // Add new state variables
+    // Immutable contract references
     address public immutable managerImplementation;
     IPositionManager public immutable positionManager;
     ITreasuryManagerFactory public immutable treasuryManagerFactory;
-    mapping(PoolId => FlaunchToken) public flaunchTokens;
-    mapping(PoolId => bool) public isNativePool;
+
+    // Pool state mappings
+    mapping(PoolId => FlaunchToken) public flaunchTokens;     // Tracks flaunch tokens for ETH pairs
+    mapping(PoolId => bool) public isNativePool;              // Identifies pools containing ETH
+    mapping(PoolId => bool) public isStablecoinPool;          // Identifies stablecoin pairs
+    mapping(PoolId => PoolAnalytics) public poolAnalytics;    // Stores pool analytics data
 
     constructor(
         IPoolManager _poolManager,
@@ -73,11 +70,9 @@ contract AdvancedLiquidityManagerHook is BaseHook {
         updateMovingAverage();
     }
 
-    function setStablecoinPool(PoolId poolId, bool isStable) public {
-        isStablecoinPool[poolId] = isStable;
-    }
-
-    function _beforeInitialize(address, PoolKey calldata key, uint160) internal override returns (bytes4) {
+    /// @notice Initializes a new pool and creates flaunch token for ETH pairs
+    /// @param key The pool key containing pool parameters
+    function _afterInitialize(address, PoolKey calldata key, uint160) internal returns (bytes4) {
         if (!key.fee.isDynamicFee()) revert MustUseDynamicFee();
         
         // Check if this is a native ETH pool
@@ -85,12 +80,12 @@ contract AdvancedLiquidityManagerHook is BaseHook {
             PoolId poolId = PoolIdLibrary.toId(key);
             isNativePool[poolId] = true;
             
-            // Flaunch the token
+            // Create flaunch token with custom parameters
             address memecoin = positionManager.flaunch(
                 IPositionManager.FlaunchParams({
-                    name: 'Token Name',
-                    symbol: 'SYMBOL',
-                    tokenUri: 'https://token.gg/',
+                    name: 'Advanced Liquidity Manager',
+                    symbol: 'ALM',
+                    tokenUri: 'https://lavender-electric-gerbil-466.mypinata.cloud/ipfs/bafybeichocyvocmrrixgunzlrcnj4u7sbg3cst54mp3e3begu4qiphe3jq',
                     initialTokenFairLaunch: 50e27,
                     premineAmount: 0,
                     creator: address(this),
@@ -101,10 +96,11 @@ contract AdvancedLiquidityManagerHook is BaseHook {
                 })
             );
 
+            // Get the token ID for the flaunch token
             uint tokenId = positionManager.flaunchContract().tokenId(memecoin);
             address payable manager = treasuryManagerFactory.deployManager(managerImplementation);
 
-            // Initialize manager
+            // Initialize manager with revenue sharing parameters
             positionManager.flaunchContract().approve(manager, tokenId);
             IRevenueManager(manager).initialize(
                 IRevenueManager.FlaunchToken(positionManager.flaunchContract(), tokenId),
@@ -118,6 +114,7 @@ contract AdvancedLiquidityManagerHook is BaseHook {
                 )
             );
 
+            // Store flaunch token information
             flaunchTokens[poolId] = FlaunchToken({
                 memecoin: memecoin,
                 tokenId: tokenId,
@@ -128,8 +125,16 @@ contract AdvancedLiquidityManagerHook is BaseHook {
         return this.beforeInitialize.selector;
     }
 
-   
+    /// @notice Sets whether a pool is a stablecoin pair
+    /// @param poolId The ID of the pool to configure
+    /// @param isStable Whether the pool contains stablecoins
+    function setStablecoinPool(PoolId poolId, bool isStable) external {
+        isStablecoinPool[poolId] = isStable;
+    }
 
+    /// @notice Calculates the appropriate fee based on pool type and market conditions
+    /// @param key The pool key containing pool parameters
+    /// @return The calculated fee in basis points
     function getFee(PoolKey calldata key) public view returns (uint24) {
         PoolId poolId = PoolIdLibrary.toId(key);
         
@@ -146,12 +151,11 @@ contract AdvancedLiquidityManagerHook is BaseHook {
             return BASE_FEE * 2;
         }
 
-        // if gasPrice > movingAverageGasPrice * 1.1, then half the fees
+        // Adjust fees based on gas price
         if (gasPrice > (movingAverageGasPrice * 11) / 10) {
             return BASE_FEE / 2;
         }
 
-        // if gasPrice < movingAverageGasPrice * 0.9, then double the fees
         if (gasPrice < (movingAverageGasPrice * 9) / 10) {
             return BASE_FEE * 2;
         }
@@ -211,8 +215,7 @@ contract AdvancedLiquidityManagerHook is BaseHook {
         return (BaseHook.afterSwap.selector, 0);
     }
 
-
-     function _beforeSwap(address sender, PoolKey calldata key, IPoolManager.SwapParams calldata params, bytes calldata data)
+    function _beforeSwap(address, PoolKey calldata key, IPoolManager.SwapParams calldata, bytes calldata)
         internal
         override
         returns (bytes4, BeforeSwapDelta, uint24)
@@ -232,44 +235,42 @@ contract AdvancedLiquidityManagerHook is BaseHook {
         return abi.decode(data, (address));
     }
 
-    // Update our moving average gas price
+    /// @notice Updates the moving average gas price for fee adjustments
     function updateMovingAverage() public {
         uint128 gasPrice = uint128(tx.gasprice);
 
-        // New Average = ((Old Average * # of Txns Tracked) + Current Gas Price) / (# of Txns Tracked + 1)
+        // Calculate new moving average
         movingAverageGasPrice =
             ((movingAverageGasPrice * movingAverageGasPriceCount) + gasPrice) / (movingAverageGasPriceCount + 1);
 
         movingAverageGasPriceCount++;
     }
 
-    // Helper functions
-    function calculatePrice(BalanceDelta delta) 
-        public pure returns (uint256) {
-        // Get absolute values of the swap amounts
+    /// @notice Calculates the current price from swap amounts
+    /// @param delta The balance delta from the swap
+    /// @return The calculated price in fixed-point format
+    function calculatePrice(BalanceDelta delta) public pure returns (uint256) {
         uint256 amount0 = uint256(abs(delta.amount0()));
         uint256 amount1 = uint256(abs(delta.amount1()));
         
-        // Avoid division by zero
         if (amount0 == 0) return 0;
         
-        // Calculate price as amount1/amount0
-        // Multiply by 1e18 for fixed-point precision
         return (amount1 * 1e18) / amount0;
     }
 
+    /// @notice Calculates price volatility over time
+    /// @param currentPrice The current price
+    /// @param lastPrice The previous price
+    /// @param lastUpdateTime The timestamp of the last update
+    /// @return The calculated volatility metric
     function calculateVolatility(
         uint256 currentPrice,
         uint256 lastPrice,
         uint256 lastUpdateTime
     ) public view returns (uint256) {
-        // Calculate time elapsed since last update (in seconds)
         uint256 timeElapsed = block.timestamp - lastUpdateTime;
         if (timeElapsed == 0) return 0;
 
-        // Calculate absolute price change percentage
-        // If currentPrice > lastPrice: (currentPrice - lastPrice) * 100 / lastPrice
-        // If currentPrice < lastPrice: (lastPrice - currentPrice) * 100 / lastPrice
         uint256 priceChange;
         if (currentPrice > lastPrice) {
             priceChange = ((currentPrice - lastPrice) * 10000) / lastPrice;
@@ -277,8 +278,6 @@ contract AdvancedLiquidityManagerHook is BaseHook {
             priceChange = ((lastPrice - currentPrice) * 10000) / lastPrice;
         }
 
-        // Normalize volatility to a per-hour basis
-        // 3600 = seconds in an hour
         return (priceChange * 3600) / timeElapsed;
     }
 
@@ -286,6 +285,8 @@ contract AdvancedLiquidityManagerHook is BaseHook {
         return x >= 0 ? x : -x;
     }
 
+    /// @notice Claims and donates collected fees back to the pool
+    /// @param key The pool key containing pool parameters
     function _claimAndDonateFees(PoolKey calldata key) internal {
         PoolId poolId = key.toId();
 
@@ -295,10 +296,10 @@ contract AdvancedLiquidityManagerHook is BaseHook {
             return;
         }
 
-        // Withdraw fees
+        // Withdraw fees from revenue manager
         (, uint ethReceived) = IRevenueManager(flaunchToken.manager).claim();
 
-        // Donate if we received ETH
+        // Donate fees back to the pool if any were received
         if (ethReceived > 0) {
             poolManager.donate({
                 key: key,

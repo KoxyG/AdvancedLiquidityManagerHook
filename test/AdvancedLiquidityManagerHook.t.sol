@@ -1,103 +1,128 @@
-// // SPDX-License-Identifier: MIT
-// pragma solidity ^0.8.24;
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.24;
 
-// import "forge-std/Test.sol";
-// import {Test} from "forge-std/Test.sol";
-// import {IPoolManager} from "v4-core/src/interfaces/IPoolManager.sol";
-// import {PoolKey} from "v4-core/src/types/PoolKey.sol";
-// import {PoolId, PoolIdLibrary} from "v4-core/src/types/PoolId.sol";
-// import {Currency} from "v4-core/src/types/Currency.sol";
-// import {AdvancedLiquidityManagerHook} from "../src/AdvancedLiquidityManagerHook.sol";
-// // import {HookTest} from "./utils/HookTest.sol";
-// import {BalanceDelta} from "v4-core/src/types/BalanceDelta.sol";
-// import {BeforeSwapDelta} from "v4-core/src/types/BeforeSwapDelta.sol";
+import {Test} from "forge-std/Test.sol";
+import {AdvancedLiquidityManagerHook} from "../src/AdvancedLiquidityManagerHook.sol";
+import {IPoolManager} from "@uniswap/v4-core/src/interfaces/IPoolManager.sol";
+import {PoolKey} from "@uniswap/v4-core/src/types/PoolKey.sol";
+import {Currency} from "@uniswap/v4-core/src/types/Currency.sol";
+import {MockERC20} from "./mocks/MockERC20.sol";
+import {MockPositionManager} from "./mocks/MockPositionManager.sol";
+import {MockTreasuryManagerFactory} from "./mocks/MockTreasuryManagerFactory.sol";
 
-
-// contract AdvancedLiquidityManagerHookTest is Test {
-//     using PoolIdLibrary for PoolKey;
-
-//     AdvancedLiquidityManagerHook hook;
-//     PoolKey poolKey;
-//     address manager;
+contract AdvancedLiquidityManagerHookTest is Test {
+    AdvancedLiquidityManagerHook hook;
+    IPoolManager poolManager;
+    MockERC20 token0;
+    MockERC20 token1;
+    MockPositionManager positionManager;
+    MockTreasuryManagerFactory treasuryFactory;
     
-//     function setUp() public {
-//         // Create a mock manager address
-//         manager = address(0x123);
+    function setUp() public {
+        // Deploy mocks
+        poolManager = IPoolManager(address(new MockPoolManager()));
+        token0 = new MockERC20("Token0", "TK0");
+        token1 = new MockERC20("Token1", "TK1");
+        positionManager = new MockPositionManager();
+        treasuryFactory = new MockTreasuryManagerFactory();
         
-//         // Deploy the hook
-//         hook = new AdvancedLiquidityManagerHook(IPoolManager(manager));
+        // Deploy hook
+        hook = new AdvancedLiquidityManagerHook(
+            poolManager,
+            address(positionManager),
+            address(treasuryFactory),
+            address(0x123) // mock implementation address
+        );
+    }
+
+//     function testDynamicFeeAdjustment() public {
+//         // Create pool key
+//         PoolKey memory key = createPoolKey(token0, token1);
         
-//         // Create a test pool key
-//         poolKey = PoolKey({
-//             currency0: Currency.wrap(address(0x1)),
-//             currency1: Currency.wrap(address(0x2)),
+//         // Test base fee
+//         assertEq(hook.getFee(key), hook.BASE_FEE());
+        
+//         // Test high volatility scenario
+//         simulateHighVolatility(key);
+//         assertEq(hook.getFee(key), hook.BASE_FEE() * 2);
+        
+//         // Test high gas price scenario
+//         simulateHighGasPrice();
+//         assertEq(hook.getFee(key), hook.BASE_FEE() / 2);
+//     }
+
+//     function testStablecoinPoolFees() public {
+//         PoolKey memory key = createPoolKey(token0, token1);
+//         hook.setStablecoinPool(key.toId(), true);
+        
+//         assertEq(hook.getFee(key), hook.STABLECOIN_BASE_FEE());
+//     }
+
+//     function testFlaunchTokenCreation() public {
+//         // Create pool with ETH
+//         PoolKey memory key = createPoolKey(Currency.wrap(address(0)), token1);
+        
+//         // Initialize pool
+//         vm.prank(address(poolManager));
+//         hook._beforeInitialize(address(0), key, 0);
+        
+//         // Verify flaunch token creation
+//         PoolId poolId = key.toId();
+//         (address memecoin, uint tokenId, address manager) = hook.flaunchTokens(poolId);
+        
+//         assertTrue(memecoin != address(0));
+//         assertTrue(tokenId > 0);
+//         assertTrue(manager != address(0));
+//     }
+
+//     function testFeeCollectionAndDonation() public {
+//         // Setup ETH pool with flaunch token
+//         PoolKey memory key = createPoolKey(Currency.wrap(address(0)), token1);
+//         vm.prank(address(poolManager));
+//         hook._beforeInitialize(address(0), key, 0);
+        
+//         // Simulate swap to trigger fee collection
+//         vm.prank(address(poolManager));
+//         hook._beforeSwap(address(0), key, IPoolManager.SwapParams(true, 1e18, 0), "");
+        
+//         // Verify fee donation
+//         // (specific assertions depend on your mock implementation)
+//     }
+
+//     function testVolatilityCalculation() public {
+//         PoolKey memory key = createPoolKey(token0, token1);
+        
+//         // Simulate price changes
+//         uint256 initialPrice = 1000e18;
+//         uint256 newPrice = 1100e18;
+//         uint256 timeElapsed = 1 hours;
+        
+//         uint256 volatility = hook.calculateVolatility(
+//             newPrice,
+//             initialPrice,
+//             block.timestamp - timeElapsed
+//         );
+        
+//         // 10% change over 1 hour should result in 1000 (10%)
+//         assertEq(volatility, 1000);
+//     }
+
+//     // Helper functions
+//     function createPoolKey(Currency currency0, Currency currency1) internal pure returns (PoolKey memory) {
+//         return PoolKey({
+//             currency0: currency0,
+//             currency1: currency1,
 //             fee: 3000,
 //             tickSpacing: 60,
-//             hooks: hook
+//             hooks: IHooks(address(0))
 //         });
 //     }
 
-//     // function test_FeeAdjustmentOnVolatility() public {
-//     //     // Simulate some swaps to build up volatility
-//     //     for(uint i = 0; i < 5; i++) {
-//     //         // Create swap params
-//     //         IPoolManager.SwapParams memory params = IPoolManager.SwapParams({
-//     //             zeroForOne: true,
-//     //             amountSpecified: 1000e18,
-//     //             sqrtPriceLimitX96: 0
-//     //         });
-
-//     //         // Simulate price changes
-//     //         BalanceDelta delta = BalanceDelta.wrap(int256((1000e18 << 128) | 900e18));
-            
-//     //         // Call afterSwap
-//     //         hook.afterSwap(address(this), poolKey, params, delta, "");
-            
-//     //         // Move time forward
-//     //         vm.warp(block.timestamp + 1 hours);
-//     //     }
-
-//     //     // Check if volatility triggered higher fees
-//     //     uint24 fee = hook.getFee(poolKey);
-//     //     assertEq(fee, hook.BASE_FEE() * 2, "Fee should be doubled due to high volatility");
-//     // }
-
-//     // function test_StablecoinPoolFees() public {
-//     //     // Mark as stablecoin pool
-//     //     hook.setStablecoinPool(poolKey.toId(), true);
-
-//     //     // Check fee
-//     //     uint24 fee = hook.getFee(poolKey);
-//     //     assertEq(fee, hook.STABLECOIN_BASE_FEE(), "Should use lower fee for stablecoin pool");
-//     // }
-
-//     // function test_GasPriceAdjustment() public {
-//     //     // Set high gas price
-//     //     vm.setGasPrice(1000 gwei);
-        
-//     //     // Update moving average
-//     //     hook.updateMovingAverage();
-        
-//     //     // Check if fee is halved
-//     //     uint24 fee = hook.getFee(poolKey);
-//     //     assertEq(fee, hook.BASE_FEE() / 2, "Fee should be halved due to high gas price");
-//     // }
-
-//     function test_VolumeTracking() public {
-//         // Simulate a swap
-//         IPoolManager.SwapParams memory params = IPoolManager.SwapParams({
-//             zeroForOne: true,
-//             amountSpecified: 1000e18,
-//             sqrtPriceLimitX96: 0
-//         });
-
-//         BalanceDelta delta = BalanceDelta.wrap(int256((1000e18 << 128) | 900e18));
-        
-//         // Execute swap
-//         hook.afterSwap(address(this), poolKey, params, delta, "");
-        
-//         // Check volume tracking
-//         (uint256 volume,,,) = hook.poolAnalytics(poolKey.toId());
-//         assertGt(volume, 0, "Volume should be tracked");
+//     function simulateHighVolatility(PoolKey memory key) internal {
+//         // Implementation depends on your specific needs
 //     }
-// } 
+
+//     function simulateHighGasPrice() internal {
+//         // Implementation depends on your specific needs
+//     }
+} 
